@@ -167,16 +167,12 @@ static __host__ __device__ void point_masses_source_term(
 // ============================================================================
 static __host__ __device__ real sound_speed_squared(
     struct EquationOfState *eos,
-    real x,
-    real y,
-    struct PointMassList *mass_list)
+    real *prim)
 {
     switch (eos->type)
     {
-        case Isothermal:
-            return eos->isothermal.sound_speed_squared;
-        case LocallyIsothermal:
-            return -gravitational_potential(mass_list, x, y) / eos->locally_isothermal.mach_number_squared;
+        case GammaLaw:
+            return prim[3] / prim[0] * ADIABATIC_GAMMA;
         default:
             return 1.0; // WARNING
     }
@@ -506,10 +502,10 @@ static __host__ __device__ void advance_rk_zone(
     real frj[NCONS];
     real ucc[NCONS];
 
-    real cs2li = sound_speed_squared(&eos, xl, yc, &mass_list);
-    real cs2ri = sound_speed_squared(&eos, xr, yc, &mass_list);
-    real cs2lj = sound_speed_squared(&eos, xc, yl, &mass_list);
-    real cs2rj = sound_speed_squared(&eos, xc, yr, &mass_list);
+    real cs2li = sound_speed_squared(&eos, pli);
+    real cs2ri = sound_speed_squared(&eos, pri);
+    real cs2lj = sound_speed_squared(&eos, plj);
+    real cs2rj = sound_speed_squared(&eos, prj);
 
     riemann_hlle(plim, plip, fli, cs2li, 0);
     riemann_hlle(prim, prip, fri, cs2ri, 0);
@@ -626,10 +622,10 @@ static __host__ __device__ void advance_rk_zone_inviscid(
     real frj[NCONS];
     real ucc[NCONS];
 
-    real cs2li = sound_speed_squared(&eos, xl, yc, &mass_list);
-    real cs2ri = sound_speed_squared(&eos, xr, yc, &mass_list);
-    real cs2lj = sound_speed_squared(&eos, xc, yl, &mass_list);
-    real cs2rj = sound_speed_squared(&eos, xc, yr, &mass_list);
+    real cs2li = sound_speed_squared(&eos, pli);
+    real cs2ri = sound_speed_squared(&eos, pri);
+    real cs2lj = sound_speed_squared(&eos, plj);
+    real cs2rj = sound_speed_squared(&eos, prj);
 
     riemann_hlle(plim, plip, fli, cs2li, 0);
     riemann_hlle(prim, prip, fri, cs2ri, 0);
@@ -676,7 +672,7 @@ static __host__ __device__ void wavespeed_zone(
     real *pc = GET(primitive, i, j);
     real x = mesh.x0 + (i + 0.5) * mesh.dx;
     real y = mesh.y0 + (j + 0.5) * mesh.dy;
-    real cs2 = sound_speed_squared(&eos, x, y, &mass_list);
+    real cs2 = sound_speed_squared(&eos, pc);
     real a = primitive_max_wavespeed(pc, cs2);
     GET(wavespeed, i, j)[0] = a;
 }

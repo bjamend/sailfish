@@ -194,8 +194,8 @@ impl Setup for Kilonova {
         primitive[2] = 0.0;
     }
     fn equation_of_state(&self) -> EquationOfState {
-        EquationOfState::Isothermal {
-            sound_speed_squared: 1.0,
+        EquationOfState::GammaLaw {
+            gamma_law_index: 5.0 / 3.0,
         }
     }
     fn mesh(&self, resolution: u32) -> Mesh {
