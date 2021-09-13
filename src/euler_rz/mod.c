@@ -51,119 +51,7 @@ static __host__ __device__ void plm_gradient(real *yl, real *y0, real *yr, real 
     }
 }
 
-
-// ============================ GRAVITY =======================================
-// ============================================================================
-static __host__ __device__ real gravitational_potential(
-    struct PointMassList *mass_list,
-    real x1,
-    real y1)
-{
-    real phi = 0.0;
-
-    for (int p = 0; p < mass_list->count; ++p)
-    {
-        real x0 = mass_list->masses[p].x;
-        real y0 = mass_list->masses[p].y;
-        real mp = mass_list->masses[p].mass;
-        real rs = mass_list->masses[p].radius;
-
-        real dx = x1 - x0;
-        real dy = y1 - y0;
-        real r2 = dx * dx + dy * dy;
-        real r2_soft = r2 + rs * rs;
-
-        phi -= mp / sqrt(r2_soft);
-    }
-    return phi;
-}
-
-static __host__ __device__ void point_mass_source_term(
-    struct PointMass *mass,
-    real x1,
-    real y1,
-    real dt,
-    real *prim,
-    real *delta_cons)
-{
-    real x0 = mass->x;
-    real y0 = mass->y;
-    real mp = mass->mass;
-    real rs = mass->radius;
-    real sigma = prim[0];
-
-    real dx = x1 - x0;
-    real dy = y1 - y0;
-    real r2 = dx * dx + dy * dy;
-    real r2_soft = r2 + rs * rs;
-    real dr = sqrt(r2);
-    real mag = sigma * mp * pow(r2_soft, -1.5);
-    real fx = -mag * dx;
-    real fy = -mag * dy;
-    real sink_rate = 0.0;
-
-    if (dr < 4.0 * rs)
-    {
-        sink_rate = mass->rate * exp(-pow(dr / rs, 4.0));
-    }
-    real mdot = sigma * sink_rate * -1.0;
-
-    switch (mass->model) {
-        case AccelerationFree:
-            delta_cons[0] = dt * mdot;
-            delta_cons[1] = dt * mdot * prim[1] + dt * fx;
-            delta_cons[2] = dt * mdot * prim[2] + dt * fy;
-            break;
-        case TorqueFree: {
-            real vx        = prim[1];
-            real vy        = prim[2];
-            real vx0       = mass->vx;
-            real vy0       = mass->vy;
-            real rhatx     = dx / (dr + 1e-12);
-            real rhaty     = dy / (dr + 1e-12);
-            real dvdotrhat = (vx - vx0) * rhatx + (vy - vy0) * rhaty;
-            real vxstar    = dvdotrhat * rhatx + vx0;
-            real vystar    = dvdotrhat * rhaty + vy0;
-            delta_cons[0] = dt * mdot;
-            delta_cons[1] = dt * mdot * vxstar + dt * fx;
-            delta_cons[2] = dt * mdot * vystar + dt * fy;
-            break;
-        }
-        case ForceFree:
-            delta_cons[0] = dt * mdot;
-            delta_cons[1] = dt * fx;
-            delta_cons[2] = dt * fy;
-            break;
-        default:
-            delta_cons[0] = 0.0;
-            delta_cons[1] = 0.0;
-            delta_cons[2] = 0.0;
-            break;
-    }
-}
-
-static __host__ __device__ void point_masses_source_term(
-    struct PointMassList *mass_list,
-    real x1,
-    real y1,
-    real dt,
-    real *prim,
-    real *cons)
-{
-    for (int p = 0; p < mass_list->count; ++p)
-    {
-        real delta_cons[NCONS];
-        point_mass_source_term(&mass_list->masses[p], x1, y1, dt, prim, delta_cons);
-
-        for (int q = 0; q < NCONS; ++q)
-        {
-            cons[q] += delta_cons[q];
-        }
-    }
-}
-
-
-// ============================ EOS AND BUFFER ================================
+// ================================= EOS ======================================
 // ============================================================================
 static __host__ __device__ real sound_speed_squared(
     struct EquationOfState *eos,
@@ -177,62 +65,6 @@ static __host__ __device__ real sound_speed_squared(
             return 1.0; // WARNING
     }
 }
-
-static __host__ __device__ void buffer_source_term(
-    struct BoundaryCondition *bc,
-    real xc,
-    real yc,
-    real dt,
-    real *cons)
-{
-    switch (bc->type)
-    {
-        case Default:
-        case Inflow:
-            break;
-
-        case KeplerianBuffer:
-        {
-            real rc = sqrt(xc * xc + yc * yc);
-            real surface_density = bc->keplerian_buffer.surface_density;
-            real central_mass = bc->keplerian_buffer.central_mass;
-            real driving_rate = bc->keplerian_buffer.driving_rate;
-            real outer_radius = bc->keplerian_buffer.outer_radius;
-            real onset_width = bc->keplerian_buffer.onset_width;
-            real onset_radius = outer_radius - onset_width;
-
-            if (rc > onset_radius)
-            {
-                real pf = surface_density * sqrt(central_mass / rc);
-                real px = pf * (-yc / rc);
-                real py = pf * ( xc / rc);
-                real u0[NCONS] = {surface_density, px, py};
-
-                real omega_outer = sqrt(central_mass * pow(onset_radius, -3.0));
-                real buffer_rate = driving_rate * omega_outer * max2(rc, 1.0);
-
-                for (int q = 0; q < NCONS; ++q)
-                {
-                    cons[q] -= (cons[q] - u0[q]) * buffer_rate * dt;
-                }
-            }
-            break;
-        }
-    }
-}
-
-static __host__ __device__ void shear_strain(const real *gx, const real *gy, real dx, real dy, real *s)
-{
-    real sxx = 4.0 / 3.0 * gx[1] / dx - 2.0 / 3.0 * gy[2] / dy;
-    real syy =-2.0 / 3.0 * gx[1] / dx + 4.0 / 3.0 * gy[2] / dy;
-    real sxy = 1.0 / 1.0 * gx[2] / dx + 1.0 / 1.0 * gy[1] / dy;
-    real syx = sxy;
-    s[0] = sxx;
-    s[1] = sxy;
-    s[2] = syx;
-    s[3] = syy;
-}
-
 
 // ============================ HYDRO =========================================
 // ============================================================================
@@ -401,159 +233,6 @@ static __host__ __device__ void advance_rk_zone(
     struct Patch primitive_wr,
     struct EquationOfState eos,
     struct BoundaryCondition bc,
-    struct PointMassList mass_list,
-    real nu,
-    real a,
-    real dt,
-    real velocity_ceiling,
-    int i,
-    int j)
-{
-    real dx = mesh.dx;
-    real dy = mesh.dy;
-    real xl = mesh.x0 + (i + 0.0) * dx;
-    real xc = mesh.x0 + (i + 0.5) * dx;
-    real xr = mesh.x0 + (i + 1.0) * dx;
-    real yl = mesh.y0 + (j + 0.0) * dy;
-    real yc = mesh.y0 + (j + 0.5) * dy;
-    real yr = mesh.y0 + (j + 1.0) * dy;
-
-    // ------------------------------------------------------------------------
-    //                 tj
-    //
-    //      +-------+-------+-------+
-    //      |       |       |       |
-    //      |  lr   |  rj   |   rr  |
-    //      |       |       |       |
-    //      +-------+-------+-------+
-    //      |       |       |       |
-    //  ki  |  li  -|+  c  -|+  ri  |  ti
-    //      |       |       |       |
-    //      +-------+-------+-------+
-    //      |       |       |       |
-    //      |  ll   |  lj   |   rl  |
-    //      |       |       |       |
-    //      +-------+-------+-------+
-    //
-    //                 kj
-    // ------------------------------------------------------------------------
-    real *un = GET(conserved_rk, i, j);
-    real *pcc = GET(primitive_rd, i, j);
-    real *pli = GET(primitive_rd, i - 1, j);
-    real *pri = GET(primitive_rd, i + 1, j);
-    real *plj = GET(primitive_rd, i, j - 1);
-    real *prj = GET(primitive_rd, i, j + 1);
-    real *pki = GET(primitive_rd, i - 2, j);
-    real *pti = GET(primitive_rd, i + 2, j);
-    real *pkj = GET(primitive_rd, i, j - 2);
-    real *ptj = GET(primitive_rd, i, j + 2);
-    real *pll = GET(primitive_rd, i - 1, j - 1);
-    real *plr = GET(primitive_rd, i - 1, j + 1);
-    real *prl = GET(primitive_rd, i + 1, j - 1);
-    real *prr = GET(primitive_rd, i + 1, j + 1);
-
-    real plip[NCONS];
-    real plim[NCONS];
-    real prip[NCONS];
-    real prim[NCONS];
-    real pljp[NCONS];
-    real pljm[NCONS];
-    real prjp[NCONS];
-    real prjm[NCONS];
-
-    real gxli[NCONS];
-    real gxri[NCONS];
-    real gyli[NCONS];
-    real gyri[NCONS];
-    real gxlj[NCONS];
-    real gxrj[NCONS];
-    real gylj[NCONS];
-    real gyrj[NCONS];
-    real gxcc[NCONS];
-    real gycc[NCONS];
-
-    plm_gradient(pki, pli, pcc, gxli);
-    plm_gradient(pli, pcc, pri, gxcc);
-    plm_gradient(pcc, pri, pti, gxri);
-    plm_gradient(pkj, plj, pcc, gylj);
-    plm_gradient(plj, pcc, prj, gycc);
-    plm_gradient(pcc, prj, ptj, gyrj);
-    plm_gradient(pll, pli, plr, gyli);
-    plm_gradient(prl, pri, prr, gyri);
-    plm_gradient(pll, plj, prl, gxlj);
-    plm_gradient(plr, prj, prr, gxrj);
-
-    for (int q = 0; q < NCONS; ++q)
-    {
-        plim[q] = pli[q] + 0.5 * gxli[q];
-        plip[q] = pcc[q] - 0.5 * gxcc[q];
-        prim[q] = pcc[q] + 0.5 * gxcc[q];
-        prip[q] = pri[q] - 0.5 * gxri[q];
-
-        pljm[q] = plj[q] + 0.5 * gylj[q];
-        pljp[q] = pcc[q] - 0.5 * gycc[q];
-        prjm[q] = pcc[q] + 0.5 * gycc[q];
-        prjp[q] = prj[q] - 0.5 * gyrj[q];
-    }
-
-    real fli[NCONS];
-    real fri[NCONS];
-    real flj[NCONS];
-    real frj[NCONS];
-    real ucc[NCONS];
-
-    real cs2li = sound_speed_squared(&eos, pli);
-    real cs2ri = sound_speed_squared(&eos, pri);
-    real cs2lj = sound_speed_squared(&eos, plj);
-    real cs2rj = sound_speed_squared(&eos, prj);
-
-    riemann_hlle(plim, plip, fli, cs2li, 0);
-    riemann_hlle(prim, prip, fri, cs2ri, 0);
-    riemann_hlle(pljm, pljp, flj, cs2lj, 1);
-    riemann_hlle(prjm, prjp, frj, cs2rj, 1);
-
-    real sli[4];
-    real sri[4];
-    real slj[4];
-    real srj[4];
-    real scc[4];
-
-    shear_strain(gxli, gyli, dx, dy, sli);
-    shear_strain(gxri, gyri, dx, dy, sri);
-    shear_strain(gxlj, gylj, dx, dy, slj);
-    shear_strain(gxrj, gyrj, dx, dy, srj);
-    shear_strain(gxcc, gycc, dx, dy, scc);
-
-    fli[1] -= 0.5 * nu * (pli[0] * sli[0] + pcc[0] * scc[0]); // x-x
-    fli[2] -= 0.5 * nu * (pli[0] * sli[1] + pcc[0] * scc[1]); // x-y
-    fri[1] -= 0.5 * nu * (pcc[0] * scc[0] + pri[0] * sri[0]); // x-x
-    fri[2] -= 0.5 * nu * (pcc[0] * scc[1] + pri[0] * sri[1]); // x-y
-    flj[1] -= 0.5 * nu * (plj[0] * slj[2] + pcc[0] * scc[2]); // y-x
-    flj[2] -= 0.5 * nu * (plj[0] * slj[3] + pcc[0] * scc[3]); // y-y
-    frj[1] -= 0.5 * nu * (pcc[0] * scc[2] + prj[0] * srj[2]); // y-x
-    frj[2] -= 0.5 * nu * (pcc[0] * scc[3] + prj[0] * srj[3]); // y-y
-
-    primitive_to_conserved(pcc, ucc);
-    buffer_source_term(&bc, xc, yc, dt, ucc);
-    point_masses_source_term(&mass_list, xc, yc, dt, pcc, ucc);
-
-    for (int q = 0; q < NCONS; ++q)
-    {
-        ucc[q] -= ((fri[q] - fli[q]) / dx + (frj[q] - flj[q]) / dy) * dt;
-        ucc[q] = (1.0 - a) * ucc[q] + a * un[q];
-    }
-    real *pout = GET(primitive_wr, i, j);
-    conserved_to_primitive(ucc, pout, velocity_ceiling);
-}
-
-static __host__ __device__ void advance_rk_zone_inviscid(
-    struct Mesh mesh,
-    struct Patch conserved_rk,
-    struct Patch primitive_rd,
-    struct Patch primitive_wr,
-    struct EquationOfState eos,
-    struct BoundaryCondition bc,
-    struct PointMassList mass_list,
     real a,
     real dt,
     real velocity_ceiling,
@@ -633,8 +312,6 @@ static __host__ __device__ void advance_rk_zone_inviscid(
     riemann_hlle(prjm, prjp, frj, cs2rj, 1);
 
     primitive_to_conserved(pcc, ucc);
-    buffer_source_term(&bc, xc, yc, dt, ucc);
-    point_masses_source_term(&mass_list, xc, yc, dt, pcc, ucc);
 
     for (int q = 0; q < NCONS; ++q)
     {
@@ -643,21 +320,6 @@ static __host__ __device__ void advance_rk_zone_inviscid(
     }
     real *pout = GET(primitive_wr, i, j);
     conserved_to_primitive(ucc, pout, velocity_ceiling);
-}
-
-static __host__ __device__ void point_mass_source_term_zone(
-    struct Mesh mesh,
-    struct Patch primitive,
-    struct Patch cons_rate,
-    struct PointMass mass,
-    int i,
-    int j)
-{
-    real *pc = GET(primitive, i, j);
-    real *sc = GET(cons_rate, i, j);
-    real x = mesh.x0 + (i + 0.5) * mesh.dx;
-    real y = mesh.y0 + (j + 0.5) * mesh.dy;
-    point_mass_source_term(&mass, x, y, 1.0, pc, sc);
 }
 
 static __host__ __device__ void wavespeed_zone(
@@ -665,7 +327,6 @@ static __host__ __device__ void wavespeed_zone(
     struct EquationOfState eos,
     struct Patch primitive,
     struct Patch wavespeed,
-    struct PointMassList mass_list,
     int i,
     int j)
 {
@@ -702,9 +363,7 @@ static void __global__ advance_rk_kernel(
     struct Patch primitive_rd,
     struct Patch primitive_wr,
     struct EquationOfState eos,
-    struct BoundaryCondition buffer,
-    struct PointMassList mass_list,
-    real nu,
+    struct BoundaryCondition bc,
     real a,
     real dt,
     real velocity_ceiling)
@@ -720,62 +379,12 @@ static void __global__ advance_rk_kernel(
             primitive_rd,
             primitive_wr,
             eos,
-            buffer,
-            mass_list,
-            nu,
+            bc,
             a,
             dt,
             velocity_ceiling,
             i, j
         );
-    }
-}
-
-static void __global__ advance_rk_kernel_inviscid(
-    struct Mesh mesh,
-    struct Patch conserved_rk,
-    struct Patch primitive_rd,
-    struct Patch primitive_wr,
-    struct EquationOfState eos,
-    struct BoundaryCondition buffer,
-    struct PointMassList mass_list,
-    real a,
-    real dt,
-    real velocity_ceiling)
-{
-    int i = threadIdx.y + blockIdx.y * blockDim.y;
-    int j = threadIdx.x + blockIdx.x * blockDim.x;
-
-    if (i < mesh.ni && j < mesh.nj)
-    {
-        advance_rk_zone_inviscid(
-            mesh,
-            conserved_rk,
-            primitive_rd,
-            primitive_wr,
-            eos,
-            buffer,
-            mass_list,
-            a,
-            dt,
-            velocity_ceiling,
-            i, j
-        );
-    }
-}
-
-static void __global__ point_mass_source_term_kernel(
-    struct Mesh mesh,
-    struct Patch primitive,
-    struct Patch cons_rate,
-    struct PointMass mass)
-{
-    int i = threadIdx.y + blockIdx.y * blockDim.y;
-    int j = threadIdx.x + blockIdx.x * blockDim.x;
-
-    if (i < mesh.ni && j < mesh.nj)
-    {
-        point_mass_source_term_zone(mesh, primitive, cons_rate, mass, i, j);
     }
 }
 
@@ -783,15 +392,14 @@ static void __global__ wavespeed_kernel(
     struct Mesh mesh,
     struct EquationOfState eos,
     struct Patch primitive,
-    struct Patch wavespeed,
-    struct PointMassList mass_list)
+    struct Patch wavespeed)
 {
     int i = threadIdx.y + blockIdx.y * blockDim.y;
     int j = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (i < mesh.ni && j < mesh.nj)
     {
-        wavespeed_zone(mesh, eos, primitive, wavespeed, mass_list, i, j);
+        wavespeed_zone(mesh, eos, primitive, wavespeed, i, j);
     }
 }
 
@@ -869,9 +477,7 @@ EXTERN_C void euler_rz_advance_rk(
     real *primitive_rd_ptr,
     real *primitive_wr_ptr,
     struct EquationOfState eos,
-    struct BoundaryCondition buffer,
-    struct PointMassList mass_list,
-    real nu,
+    struct BoundaryCondition bc,
     real a,
     real dt,
     real velocity_ceiling,
@@ -883,75 +489,36 @@ EXTERN_C void euler_rz_advance_rk(
 
     switch (mode) {
         case CPU: {
-            if (nu == 0.0) {
-                FOR_EACH(conserved_rk) {
-                    advance_rk_zone_inviscid(
-                        mesh,
-                        conserved_rk,
-                        primitive_rd,
-                        primitive_wr,
-                        eos,
-                        buffer,
-                        mass_list,
-                        a,
-                        dt,
-                        velocity_ceiling,
-                        i, j
-                    );
-                }
-            } else {
-                FOR_EACH(conserved_rk) {
-                    advance_rk_zone(
-                        mesh,
-                        conserved_rk,
-                        primitive_rd,
-                        primitive_wr,
-                        eos,
-                        buffer,
-                        mass_list,
-                        nu,
-                        a,
-                        dt,
-                        velocity_ceiling,
-                        i, j);
-                }
+            FOR_EACH(conserved_rk) {
+                advance_rk_zone(
+                    mesh,
+                    conserved_rk,
+                    primitive_rd,
+                    primitive_wr,
+                    eos,
+                    bc,
+                    a,
+                    dt,
+                    velocity_ceiling,
+                    i, j);
             }
             break;
         }
 
         case OMP: {
             #ifdef _OPENMP
-            if (nu == 0.0) {
-                FOR_EACH_OMP(conserved_rk) {
-                    advance_rk_zone_inviscid(
-                        mesh,
-                        conserved_rk,
-                        primitive_rd,
-                        primitive_wr,
-                        eos,
-                        buffer,
-                        mass_list,
-                        a,
-                        dt,
-                        velocity_ceiling,
-                        i, j);
-                }
-            } else {
-                FOR_EACH_OMP(conserved_rk) {
-                    advance_rk_zone(
-                        mesh,
-                        conserved_rk,
-                        primitive_rd,
-                        primitive_wr,
-                        eos,
-                        buffer,
-                        mass_list,
-                        nu,
-                        a,
-                        dt,
-                        velocity_ceiling,
-                        i, j);
-                }
+            FOR_EACH_OMP(conserved_rk) {
+                advance_rk_zone(
+                    mesh,
+                    conserved_rk,
+                    primitive_rd,
+                    primitive_wr,
+                    eos,
+                    bc,
+                    a,
+                    dt,
+                    velocity_ceiling,
+                    i, j);
             }
             break;
             #endif
@@ -962,90 +529,22 @@ EXTERN_C void euler_rz_advance_rk(
             #if defined(__NVCC__) || defined(__ROCM__)
             dim3 bs = dim3(16, 16);
             dim3 bd = dim3((mesh.nj + bs.x - 1) / bs.x, (mesh.ni + bs.y - 1) / bs.y);
-            if (nu == 0.0) {
-                advance_rk_kernel_inviscid<<<bd, bs>>>(
-                    mesh,
-                    conserved_rk,
-                    primitive_rd,
-                    primitive_wr,
-                    eos,
-                    buffer,
-                    mass_list,
-                    a,
-                    dt,
-                    velocity_ceiling
+            advance_rk_kernel<<<bd, bs>>>(
+                mesh,
+                conserved_rk,
+                primitive_rd,
+                primitive_wr,
+                eos,
+                bc,
+                a,
+                dt,
+                velocity_ceiling
                 );
-            } else {
-                advance_rk_kernel<<<bd, bs>>>(
-                    mesh,
-                    conserved_rk,
-                    primitive_rd,
-                    primitive_wr,
-                    eos,
-                    buffer,
-                    mass_list,
-                    nu,
-                    a,
-                    dt,
-                    velocity_ceiling
-                );
-            }
             #endif
             break;
         }
     }
 }
-
-
-/**
- * Fill a buffer with the source terms that would result from a single point
- * mass. The result is the rate of surface density addition (will be negative
- * for positive sink rate), and the gravitational force surface densities in
- * each zone.
- * @param mesh                The mesh [ni,     nj]
- * @param primitive_ptr[in]   [-2, -2] [ni + 4, nj + 4] [3]
- * @param cons_rate_ptr[out]  [ 0,  0] [ni,     nj]     [1]
- * @param mass                A point mass
- * @param mode                The execution mode
- */
-EXTERN_C void euler_rz_point_mass_source_term(
-    struct Mesh mesh,
-    real *primitive_ptr,
-    real *cons_rate_ptr,
-    struct PointMass mass,
-    enum ExecutionMode mode)
-{
-    struct Patch primitive = patch(mesh, NCONS, 2, primitive_ptr);
-    struct Patch cons_rate = patch(mesh, NCONS, 0, cons_rate_ptr);
-
-    switch (mode) {
-        case CPU: {
-            FOR_EACH(cons_rate) {
-                point_mass_source_term_zone(mesh, primitive, cons_rate, mass, i, j);
-            }
-            break;
-        }
-
-        case OMP: {
-            #ifdef _OPENMP
-            FOR_EACH_OMP(cons_rate) {
-                point_mass_source_term_zone(mesh, primitive, cons_rate, mass, i, j);
-            }
-            #endif
-            break;
-        }
-
-        case GPU: {
-            #if defined(__NVCC__) || defined(__ROCM__)
-            dim3 bs = dim3(16, 16);
-            dim3 bd = dim3((mesh.nj + bs.x - 1) / bs.x, (mesh.ni + bs.y - 1) / bs.y);
-            point_mass_source_term_kernel<<<bd, bs>>>(mesh, primitive, cons_rate, mass);
-            #endif
-            break;
-        }
-    }
-}
-
 
 /**
  * Fill a buffer with the maximum wavespeed in each zone.
@@ -1061,7 +560,6 @@ EXTERN_C void euler_rz_wavespeed(
     real *primitive_ptr,
     real *wavespeed_ptr,
     struct EquationOfState eos,
-    struct PointMassList mass_list,
     enum ExecutionMode mode)
 {
     struct Patch primitive = patch(mesh, NCONS, 2, primitive_ptr);
@@ -1070,7 +568,7 @@ EXTERN_C void euler_rz_wavespeed(
     switch (mode) {
         case CPU: {
             FOR_EACH(wavespeed) {
-                wavespeed_zone(mesh, eos, primitive, wavespeed, mass_list, i, j);
+                wavespeed_zone(mesh, eos, primitive, wavespeed, i, j);
             }
             break;
         }
@@ -1078,7 +576,7 @@ EXTERN_C void euler_rz_wavespeed(
         case OMP: {
             #ifdef _OPENMP
             FOR_EACH_OMP(wavespeed) {
-                wavespeed_zone(mesh, eos, primitive, wavespeed, mass_list, i, j);
+                wavespeed_zone(mesh, eos, primitive, wavespeed, i, j);
             }
             #endif
             break;
@@ -1088,7 +586,7 @@ EXTERN_C void euler_rz_wavespeed(
             #if defined(__NVCC__) || defined(__ROCM__)
             dim3 bs = dim3(16, 16);
             dim3 bd = dim3((mesh.nj + bs.x - 1) / bs.x, (mesh.ni + bs.y - 1) / bs.y);
-            wavespeed_kernel<<<bd, bs>>>(mesh, eos, primitive, wavespeed, mass_list);
+            wavespeed_kernel<<<bd, bs>>>(mesh, eos, primitive, wavespeed);
             #endif
             break;
         }

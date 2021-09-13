@@ -83,8 +83,6 @@ impl Solver {
                 self.primitive2.as_mut_ptr(),
                 self.setup.equation_of_state(),
                 self.setup.boundary_condition(),
-                self.setup.masses(self.time),
-                self.setup.viscosity().unwrap_or(0.0),
                 a,
                 dt,
                 self.setup.velocity_ceiling().unwrap_or(f64::MAX),
@@ -119,7 +117,6 @@ impl PatchBasedSolve for Solver {
                 self.primitive1.as_ptr(),
                 wavespeeds.as_mut_ptr(),
                 eos,
-                self.setup.masses(self.time),
                 self.mode,
             )
         });
@@ -143,37 +140,6 @@ impl PatchBasedSolve for Solver {
                 }
             }
         }
-    }
-
-    fn reductions(&self) -> Vec<f64> {
-        let mut lock = self.source_buf.lock().unwrap();
-        let cons_rate = lock.deref_mut();
-        let mut result = vec![];
-
-        for mass in self.setup.masses(self.time).to_vec() {
-            gpu_core::scope(self.device, || unsafe {
-                euler_rz::euler_rz_point_mass_source_term(
-                    self.mesh,
-                    self.primitive1.as_ptr(),
-                    cons_rate.as_ptr(),
-                    mass,
-                    self.mode,
-                )
-            });
-            let mut udot = cons_rate
-                .to_host()
-                .as_slice()
-                .unwrap()
-                .chunks_exact(4) //Not sure if this should stay as 3 or be changed to 4 like now
-                .fold([0.0, 0.0, 0.0], |a: [f64; 3], b: &[f64]| {
-                    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-                });
-            for ud in &mut udot {
-                *ud *= self.mesh.dx * self.mesh.dy;
-            }
-            result.extend(udot)
-        }
-        result
     }
 
     fn set_timestep(&mut self, dt: f64) {
